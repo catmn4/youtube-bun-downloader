@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { download } from "@blagoja/ts-dlp";
 
 type YtDlpFormat = {
@@ -22,9 +22,6 @@ type Quality = {
   hasAudio: boolean;
 };
 
-const vendorDir = join(import.meta.dir, "..", "vendor");
-const bundledYtDlp = join(vendorDir, "yt-dlp");
-
 if (process.platform !== "linux" || process.arch !== "x64") {
   console.error(
     `هذا الإصدار مخصص لـ Linux x86_64 فقط. النظام الحالي: ${process.platform}/${process.arch}`,
@@ -32,13 +29,25 @@ if (process.platform !== "linux" || process.arch !== "x64") {
   process.exit(1);
 }
 
-if (existsSync(bundledYtDlp)) {
-  process.env.PATH = `${vendorDir}:${process.env.PATH ?? ""}`;
-} else {
-  console.warn(
-    "تنبيه: لم يتم العثور على yt-dlp المضمّن، سيتم استخدام النسخة الموجودة في PATH.",
+const vendorDir = process.env.TOOLS_DIR?.trim() || join(import.meta.dir, "..", "vendor");
+const bundledYtDlp = process.env.YTDLP_PATH?.trim() || join(vendorDir, "yt-dlp");
+
+if (!existsSync(bundledYtDlp)) {
+  throw new Error(
+    `لم يتم العثور على yt-dlp في: ${bundledYtDlp}. اضبط YTDLP_PATH أو TOOLS_DIR داخل .env.`,
   );
 }
+
+const fileHeader = statSync(bundledYtDlp).size < 1000
+  ? readFileSync(bundledYtDlp, "utf8").slice(0, 80)
+  : "";
+if (fileHeader.startsWith("version https://git-lfs.github.com/spec/v1")) {
+  throw new Error(
+    `الملف ${bundledYtDlp} هو Git LFS pointer وليس الملف التنفيذي. نفّذ git lfs pull أو ارفع binary الحقيقي إلى الخادم.`,
+  );
+}
+
+process.env.PATH = `${dirname(bundledYtDlp)}:${process.env.PATH ?? ""}`;
 
 const url = process.env.YOUTUBE_URL?.trim();
 const outputDir = process.env.OUTPUT_DIR?.trim() || "downloads";
@@ -64,7 +73,7 @@ function isYouTubeUrl(value: string): boolean {
 
 async function getAvailableQualities(videoUrl: string): Promise<Quality[]> {
   const process = Bun.spawn(
-    ["yt-dlp", "--dump-single-json", "--no-playlist", videoUrl],
+    [bundledYtDlp, "--dump-single-json", "--no-playlist", videoUrl],
     { stdout: "pipe", stderr: "pipe" },
   );
 

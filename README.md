@@ -37,7 +37,7 @@ TOOLS_DIR=/home/container/vendor
 # YTDLP_PATH=/home/container/vendor/yt-dlp
 ```
 
-إذا ظهرت رسالة أن الملف هو `Git LFS pointer`، فهذا يعني أن لوحة الاستضافة جلبت ملفًا نصيًا صغيرًا بدل binary الحقيقي. في هذه الحالة يجب تفعيل Git LFS في الاستضافة أو رفع ملفات `vendor/yt-dlp` و`vendor/ffmpeg` و`vendor/ffprobe` الحقيقية إلى الخادم. لا يكفي عمل `bun install`.
+إذا وجدت لوحة الاستضافة ملفات Git LFS pointer بدل binaries، فسيكتشف البرنامج ذلك وينزّل تلقائيًا نسخ Linux x86_64 الحقيقية إلى `.runtime-tools/` عند بدء التشغيل، ويترك ملفات Git LFS الأصلية دون تعديل حتى لا يتعارض `AUTO_UPDATE`. يحتاج الخادم إلى اتصال إنترنت، وقد يستغرق أول تشغيل عدة دقائق بسبب حجم FFmpeg.
 
 ## التشغيل
 

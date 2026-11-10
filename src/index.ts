@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readdir, rm } from "node:fs/promises";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { download } from "@blagoja/ts-dlp";
@@ -29,10 +29,102 @@ if (process.platform !== "linux" || process.arch !== "x64") {
   process.exit(1);
 }
 
-const vendorDir = process.env.TOOLS_DIR?.trim() || join(import.meta.dir, "..", "vendor");
-const bundledYtDlp = process.env.YTDLP_PATH?.trim() || join(vendorDir, "yt-dlp");
+function isLfsPointer(path: string): boolean {
+  if (!existsSync(path) || statSync(path).size >= 1000) return false;
+  return readFileSync(path, "utf8").startsWith(
+    "version https://git-lfs.github.com/spec/v1",
+  );
+}
 
-if (!existsSync(bundledYtDlp)) {
+const projectVendorDir = join(import.meta.dir, "..", "vendor");
+const configuredToolsDir = process.env.TOOLS_DIR?.trim();
+const configuredYtdlpPath = process.env.YTDLP_PATH?.trim();
+const projectYtdlp = join(projectVendorDir, "yt-dlp");
+const projectFfmpeg = join(projectVendorDir, "ffmpeg");
+const projectFfprobe = join(projectVendorDir, "ffprobe");
+const needsRuntimeTools =
+  !configuredToolsDir &&
+  !configuredYtdlpPath &&
+  (isLfsPointer(projectYtdlp) ||
+    isLfsPointer(projectFfmpeg) ||
+    isLfsPointer(projectFfprobe) ||
+    !existsSync(projectYtdlp) ||
+    !existsSync(projectFfmpeg) ||
+    !existsSync(projectFfprobe));
+const toolsDir = configuredToolsDir ||
+  (needsRuntimeTools ? join(import.meta.dir, "..", ".runtime-tools") : projectVendorDir);
+const bundledYtDlp = configuredYtdlpPath || join(toolsDir, "yt-dlp");
+const bundledFfmpeg = join(toolsDir, "ffmpeg");
+const bundledFfprobe = join(toolsDir, "ffprobe");
+
+async function findFile(root: string, filename: string): Promise<string | undefined> {
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isFile() && entry.name === filename) return path;
+    if (entry.isDirectory()) {
+      const found = await findFile(path, filename);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+async function downloadFile(url: string, destination: string): Promise<void> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`تعذر تنزيل ${url}: HTTP ${response.status}`);
+  }
+  await Bun.write(destination, await response.arrayBuffer());
+  await chmod(destination, 0o755);
+}
+
+async function ensureBundledTools(): Promise<void> {
+  await mkdir(toolsDir, { recursive: true });
+
+  if (!existsSync(bundledYtDlp) || isLfsPointer(bundledYtDlp)) {
+    console.log("جاري تنزيل yt-dlp Linux x86_64...");
+    await downloadFile(
+      "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux",
+      bundledYtDlp,
+    );
+  }
+
+  if (!existsSync(bundledFfmpeg) || isLfsPointer(bundledFfmpeg) ||
+      !existsSync(bundledFfprobe) || isLfsPointer(bundledFfprobe)) {
+    console.log("جاري تنزيل FFmpeg Linux x86_64...");
+    const archive = join(toolsDir, ".ffmpeg-linux64.tar.xz");
+    const extractDir = join(toolsDir, ".ffmpeg-extract");
+    await downloadFile(
+      "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-linux64-gpl-9.0.tar.xz",
+      archive,
+    );
+    await rm(extractDir, { recursive: true, force: true });
+    await mkdir(extractDir, { recursive: true });
+    const extraction = Bun.spawn(["tar", "-xJf", archive, "-C", extractDir], {
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const extractionError = await new Response(extraction.stderr).text();
+    if ((await extraction.exited) !== 0) {
+      throw new Error(`تعذر فك حزمة FFmpeg: ${extractionError}`);
+    }
+    const ffmpegSource = await findFile(extractDir, "ffmpeg");
+    const ffprobeSource = await findFile(extractDir, "ffprobe");
+    if (!ffmpegSource || !ffprobeSource) {
+      throw new Error("لم يتم العثور على ffmpeg أو ffprobe داخل الحزمة المنزّلة.");
+    }
+    await copyFile(ffmpegSource, bundledFfmpeg);
+    await copyFile(ffprobeSource, bundledFfprobe);
+    await chmod(bundledFfmpeg, 0o755);
+    await chmod(bundledFfprobe, 0o755);
+    await rm(archive, { force: true });
+    await rm(extractDir, { recursive: true, force: true });
+  }
+}
+
+await ensureBundledTools();
+
+if (!existsSync(bundledYtDlp) || isLfsPointer(bundledYtDlp)) {
   throw new Error(
     `لم يتم العثور على yt-dlp في: ${bundledYtDlp}. اضبط YTDLP_PATH أو TOOLS_DIR داخل .env.`,
   );
@@ -47,7 +139,7 @@ if (fileHeader.startsWith("version https://git-lfs.github.com/spec/v1")) {
   );
 }
 
-process.env.PATH = `${dirname(bundledYtDlp)}:${process.env.PATH ?? ""}`;
+process.env.PATH = `${toolsDir}:${process.env.PATH ?? ""}`;
 
 const url = process.env.YOUTUBE_URL?.trim();
 const outputDir = process.env.OUTPUT_DIR?.trim() || "downloads";
